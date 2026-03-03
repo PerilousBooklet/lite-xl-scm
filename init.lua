@@ -20,9 +20,11 @@ local changes = require "plugins.scm.changes"
 local Doc = require "core.doc"
 local DocView = require "core.docview"
 local StatusView = require "core.statusview"
+
 local ReadDoc = require "plugins.scm.readdoc"
 local Git = require "plugins.scm.backend.git"
 local Fossil = require "plugins.scm.backend.fossil"
+
 local MessageBox = require "libraries.widget.messagebox"
 
 ---Backends shipped with the plugin.
@@ -1151,14 +1153,24 @@ command.add(
 	end,
 })
 
+command.add(nil, {
+  ["scm:open-git-graph"] = function()
+    local gitgraph = ReadDoc("TEST")
+    -- FIX: get output of `git log --graph --oneline`
+    gitgraph:set_text(diff)
+    core.root_view:open_doc(gitgraph)
+  end
+})
+
 --------------------------------------------------------------------------------
 -- Keymaps
 --------------------------------------------------------------------------------
 keymap.add {
-  ["ctrl+alt+["]  = "scm:goto-previous-change",
-  ["ctrl+alt+]"]  = "scm:goto-next-change",
-  ["ctrl+alt+b"]  = "scm:toggle-blame",
-  ["alt+b"]       = "scm:view-blame-diff",
+  ["ctrl+alt+["]    = "scm:goto-previous-change",
+  ["ctrl+alt+]"]    = "scm:goto-next-change",
+  ["ctrl+shift+b"]  = "scm:toggle-blame",
+  ["alt+b"]         = "scm:view-blame-diff",
+  ["ctrl+shift+g"]  = "scm:open-git-graph"
 }
 
 --------------------------------------------------------------------------------
