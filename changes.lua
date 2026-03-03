@@ -27,12 +27,13 @@ function changes.parse(diff)
     elseif dstart > 0 or astart > 0 then
       local type = line:match("^([%+%-%s])")
       if type then
-        if dstart > 0 and (type == "-" or type:match("%s")) then
+        local is_space = type:match("%s")
+        if dstart > 0 and (type == "-" or is_space) then
           if type == "-" then deletes[dstart] = "deletion" end
           dstart = dstart + 1
           if dstart >= deletions then dstart = 0 end
         end
-        if astart > 0 and (type == "+" or type:match("%s")) then
+        if astart > 0 and (type == "+" or is_space) then
           if type == "+" then inserts[astart] = "addition" end
           astart = astart + 1
           if astart >= additions then astart = 0 end
