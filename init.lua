@@ -1157,6 +1157,7 @@ command.add(nil, {
   ["scm:open-git-graph"] = function()
     local gitgraph = ReadDoc("TEST")
     -- FIX: get output of `git log --graph --oneline`
+    -- NOTE: look at the code that shows the output of `git status` in a new tab
     gitgraph:set_text(diff)
     core.root_view:open_doc(gitgraph)
   end
