@@ -218,6 +218,15 @@ function Git:get_diff(directory, callback)
   end, directory, "diff")
 end
 
+---@param directory string
+---@param callback plugins.scm.backend.ongethistory
+function Git:get_history(directory, callback)
+  self:execute(function(proc)
+    local history = self:get_process_output(proc, "stdout")
+    callback(history)
+  end, directory, "log", "--oneline", "--graph")
+end
+
 ---@param file string
 ---@param callback plugins.scm.backend.ongetdiff
 function Git:get_file_diff(file, directory, callback)

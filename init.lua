@@ -397,6 +397,27 @@ function scm.open_diff(project_dir)
   end
 end
 
+---@param project_dir? string
+function scm.open_history(project_dir)
+  project_dir = project_dir or util.get_current_project()
+  local backend = PROJECTS[project_dir]
+  if backend then
+    backend:get_history(project_dir, function(history)
+      if history and history ~= "" then
+        local title = "[CHANGES].diff"
+          ---@type plugins.scm.readdoc
+          local history_doc = ReadDoc(title, title)
+          history_doc:set_text(history)
+          core.root_view:open_doc(history_doc)
+      else
+        core.warn("SCM: no changes detected.")
+      end
+    end)
+  else
+    core.warn("SCM: current project directory is not versioned.")
+  end
+end
+
 function scm.open_path_diff(path)
   local project_dir = util.get_project_dir(path)
   local backend = PROJECTS[project_dir]
@@ -985,6 +1006,10 @@ command.add(
 
   ["scm:global-diff"] = function(project_dir)
     scm.open_diff(project_dir)
+  end,
+
+  ["scm:history"] = function(project_dir)
+    scm.open_history(project_dir)
   end,
 
   ["scm:project-status"] = function(project_dir)
