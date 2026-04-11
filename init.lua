@@ -460,6 +460,33 @@ function scm.open_project_status(project_dir)
   end
 end
 
+---@param project_dir? string
+function scm.fetch_all(project_dir)
+  project_dir = project_dir or util.get_current_project()
+  local backend = PROJECTS[project_dir]
+  if backend then
+    backend:fetch_all(project_dir, function ()
+    	core.info("Fetched all new changes from remote.")
+    end)
+  else
+    core.warn("SCM: current project directory is not versioned.")
+  end
+end
+
+---@param project_dir? string
+function scm.pull(project_dir)
+  project_dir = project_dir or util.get_current_project()
+  local backend = PROJECTS[project_dir]
+  if backend then
+    backend:pull(project_dir, function ()
+      -- TODO: print name of current branch ?
+    	core.info("Pulled all new changes from remote onto current branch.")
+    end)
+  else
+    core.warn("SCM: current project directory is not versioned.")
+  end
+end
+
 ---@param project_dir string
 function scm.pull(project_dir)
   local backend = PROJECTS[project_dir]
@@ -989,6 +1016,14 @@ command.add(
 
   ["scm:project-status"] = function(project_dir)
     scm.open_project_status(project_dir)
+  end,
+
+  ["scm:fetch-all"] = function(project_dir)
+    scm.fetch_all(project_dir)
+  end,
+
+  ["scm:pull"] = function(project_dir)
+    scm.pull(project_dir)
   end
 })
 
@@ -1159,6 +1194,9 @@ keymap.add {
   ["ctrl+alt+]"]  = "scm:goto-next-change",
   ["ctrl+alt+b"]  = "scm:toggle-blame",
   ["alt+b"]       = "scm:view-blame-diff",
+  -- FIX: find proper codename for left-alt key
+  ["lalt+f"]      = "scm:fetch-all",
+  ["lalt+p"]      = "scm:pull"
 }
 
 --------------------------------------------------------------------------------

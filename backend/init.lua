@@ -44,6 +44,8 @@ local Object = require "core.object"
 ---@alias plugins.scm.backend.ongetchanges fun(changes:plugins.scm.backend.filechange[], cached?:boolean)
 ---@alias plugins.scm.backend.ongetcommit fun(changes:plugins.scm.backend.commit, cached?:boolean)
 ---@alias plugins.scm.backend.ongetfilestatus fun(status?:plugins.scm.backend.filestatus, cached?:boolean)
+---@alias plugins.scm.backend.onfetchall fun(cached?:boolean)
+---@alias plugins.scm.backend.onpull fun(cached?:boolean)
 ---@alias plugins.scm.backend.ongetfileblame fun(list?:plugins.scm.backend.blame[], cached?:boolean)
 ---@alias plugins.scm.backend.ongetstaged fun(files?:table<string,boolean>, cached?:boolean)
 ---@alias plugins.scm.backend.ongetstats fun(stats?:plugins.scm.backend.stats, cached?:boolean)
@@ -308,6 +310,13 @@ function Backend:get_file_diff(file, directory, callback) callback(nil) end
 ---@param callback plugins.scm.backend.ongetfilestatus
 ---@diagnostic disable-next-line
 function Backend:get_file_status(file, directory, callback) callback("unchanged") end
+
+---Fetch all new changes from set remote.
+---@param file string Absolute path to file
+---@param directory string Project directory
+---@param callback plugins.scm.backend.onfetchall
+---@diagnostic disable-next-line
+function Backend:fetch_all(file, directory, callback) callback(nil) end
 
 ---Retrieve the blame information for every line on a file.
 ---@param file string Absolute path to file

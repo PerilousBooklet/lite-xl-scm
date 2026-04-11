@@ -264,6 +264,25 @@ function Git:get_file_status(file, directory, callback)
   end, directory, "status", "-s", common.relative_path(directory, file))
 end
 
+---@param directory string
+---@param callback plugins.scm.backend.onfetchall
+function Git:fetch_all(directory, callback)
+  self:execute(function(proc)
+    local fetch = self:get_process_output(proc, "stdout")
+    callback(fetch)
+  end, directory, "fetch", "--all")
+end
+
+---@param directory string
+---@param callback plugins.scm.backend.onfetchall
+function Git:pull(directory, callback)
+  self:execute(function(proc)
+    local pull = self:get_process_output(proc, "stdout")
+    callback(pull)
+    -- FIX: [ERROR] SCM: failed to pull '/home/raffaele/dev/2-areas/lite-xl/lite-xl-scm', There is no tracking information for the current branch.
+  end, directory, "pull")
+end
+
 ---@param file string
 ---@param directory string
 ---@param callback plugins.scm.backend.ongetfileblame
