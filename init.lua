@@ -404,7 +404,7 @@ function scm.open_history(project_dir)
   if backend then
     backend:get_history(project_dir, function(history)
       if history and history ~= "" then
-        local title = "[CHANGES].diff"
+        local title = "[HISTORY].diff"
           ---@type plugins.scm.readdoc
           local history_doc = ReadDoc(title, title)
           history_doc:set_text(history)
