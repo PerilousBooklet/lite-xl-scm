@@ -218,6 +218,15 @@ function Git:get_diff(directory, callback)
   end, directory, "diff")
 end
 
+---@param directory string
+---@param callback plugins.scm.backend.ongetbranchlist
+function Git:get_branch_list(directory, callback)
+  self:execute(function(proc)
+    local branch_list = self:get_process_output(proc, "stdout")
+    callback(branch_list)
+  end, directory, "branch", "-a")
+end
+
 ---@param file string
 ---@param callback plugins.scm.backend.ongetdiff
 function Git:get_file_diff(file, directory, callback)

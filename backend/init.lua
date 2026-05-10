@@ -40,6 +40,7 @@ local Object = require "core.object"
 
 ---@alias plugins.scm.backend.onexecute fun(proc?:process, errmsg?:string, errcode?:number)
 ---@alias plugins.scm.backend.ongetdiff fun(diff?:string, cached?:boolean)
+---@alias plugins.scm.backend.ongetbranchlist fun(branch_list?:string, cached?:boolean)
 ---@alias plugins.scm.backend.ongetbranch fun(branch?:string, cached?:boolean)
 ---@alias plugins.scm.backend.ongetchanges fun(changes:plugins.scm.backend.filechange[], cached?:boolean)
 ---@alias plugins.scm.backend.ongetcommit fun(changes:plugins.scm.backend.commit, cached?:boolean)

@@ -397,6 +397,27 @@ function scm.open_diff(project_dir)
   end
 end
 
+---@param project_dir? string
+function scm.open_branch_list(project_dir)
+  project_dir = project_dir or util.get_current_project()
+  local backend = PROJECTS[project_dir]
+  if backend then
+    backend:get_branch_list(project_dir, function(branch_list)
+      if branch_list and branch_list ~= "" then
+        local title = "[Branches].diff"
+          ---@type plugins.scm.readdoc
+          local branch_list_doc = ReadDoc(title, title)
+          branch_list_doc:set_text(branch_list)
+          core.root_view:open_doc(branch_list_doc)
+      else
+        core.warn("SCM: no branches detected.")
+      end
+    end)
+  else
+    core.warn("SCM: current project directory is not versioned.")
+  end
+end
+
 function scm.open_path_diff(path)
   local project_dir = util.get_project_dir(path)
   local backend = PROJECTS[project_dir]
@@ -985,6 +1006,10 @@ command.add(
 
   ["scm:global-diff"] = function(project_dir)
     scm.open_diff(project_dir)
+  end,
+
+  ["scm:list-branches"] = function(project_dir)
+    scm.open_branch_list(project_dir)
   end,
 
   ["scm:project-status"] = function(project_dir)
