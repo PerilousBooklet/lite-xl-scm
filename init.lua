@@ -410,7 +410,7 @@ function scm.open_history(project_dir)
           history_doc:set_text(history)
           core.root_view:open_doc(history_doc)
       else
-        core.warn("SCM: no changes detected.")
+        core.warn("SCM: no commit history detected.")
       end
     end)
   else
