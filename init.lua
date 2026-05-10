@@ -404,7 +404,7 @@ function scm.open_branch_list(project_dir)
   if backend then
     backend:get_branch_list(project_dir, function(branch_list)
       if branch_list and branch_list ~= "" then
-        local title = "[Branches].diff"
+        local title = "Branches"
           ---@type plugins.scm.readdoc
           local branch_list_doc = ReadDoc(title, title)
           branch_list_doc:set_text(branch_list)
