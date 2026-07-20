@@ -24,6 +24,7 @@ local ReadDoc = require "plugins.scm.readdoc"
 local Git = require "plugins.scm.backend.git"
 local Fossil = require "plugins.scm.backend.fossil"
 local MessageBox = require "libraries.widget.messagebox"
+local MergeView = require "plugins.scm.mergeview"
 
 ---Backends shipped with the plugin.
 ---@type table<string,plugins.scm.backend>
@@ -700,6 +701,127 @@ function scm.update()
 end
 
 --------------------------------------------------------------------------------
+-- Merge support
+--------------------------------------------------------------------------------
+
+---Opens a MergeView for a single file: left/right panes show the file as
+---it exists on the origin/destination branches (virtual, read-only
+---buffers), and the center pane is the real, on-disk file opened
+---normally, so it's fully editable/saveable like any other doc.
+---@param path string Absolute path of the file to review
+---@param project_dir string
+---@param backend plugins.scm.backend
+---@param origin string Origin branch name
+---@param destination string Destination branch name
+function scm.open_merge_view(path, project_dir, backend, origin, destination)
+  backend:get_file_at_ref(path, origin, project_dir, function(origin_text)
+    backend:get_file_at_ref(path, destination, project_dir, function(destination_text)
+      local base = common.basename(path)
+
+      -- keep the real extension at the very end of the title (branch
+      -- name goes as a prefix instead) so Lite XL's syntax detection,
+      -- which matches file extensions anchored to the end of the
+      -- filename, still picks the right highlighter for these virtual
+      -- buffers -- same trick already used by open_diff/open_path_diff.
+      local origin_title = string.format("[%s] %s", origin, base)
+      ---@type plugins.scm.readdoc
+      local origin_doc = ReadDoc(origin_title, origin_title)
+      origin_doc:set_text(origin_text or "")
+
+      local destination_title = string.format("[%s] %s", destination, base)
+      ---@type plugins.scm.readdoc
+      local destination_doc = ReadDoc(destination_title, destination_title)
+      destination_doc:set_text(destination_text or "")
+
+      -- the real file, currently sitting mid-merge on disk (possibly
+      -- with conflict markers); opened the normal way so editing/saving
+      -- behaves exactly like any other doc in the editor.
+      local center_doc = core.open_doc(path)
+
+      local view = MergeView(origin_doc, center_doc, destination_doc)
+      local node = core.root_view:get_active_node_default()
+      node:add_view(view)
+    end)
+  end)
+end
+
+---Checks out the destination branch, merges the origin branch into it
+---without committing (leaving conflicts, if any, in the working tree),
+---then opens a MergeView tab for every file the merge touched.
+---@param project_dir string
+---@param backend plugins.scm.backend
+---@param destination string
+---@param origin string
+function scm.perform_merge(project_dir, backend, destination, origin)
+  core.log("SCM: checking out '%s'...", destination)
+  backend:checkout_branch(destination, project_dir, function(checkout_success, checkout_errmsg)
+    if not checkout_success then
+      core.error("SCM: could not checkout '%s': %s", destination, checkout_errmsg)
+      return
+    end
+
+    core.log("SCM: merging '%s' into '%s'...", origin, destination)
+    backend:merge_branch(origin, project_dir, function(merge_success, merge_msg)
+      if not merge_success then
+        core.error("SCM: merge failed: %s", merge_msg)
+        return
+      end
+
+      backend:get_changes(project_dir, function(file_changes)
+        if #file_changes == 0 then
+          core.log("SCM: merge completed, no file differences to review.")
+          return
+        end
+
+        core.log("SCM: %d file(s) to review.", #file_changes)
+        for _, change in ipairs(file_changes) do
+          scm.open_merge_view(change.path, project_dir, backend, origin, destination)
+        end
+      end)
+    end)
+  end)
+end
+
+---Starts an interactive merge: prompts for the destination branch, then
+---the origin branch (both with fuzzy-matched branch lists), and hands off
+---to scm.perform_merge.
+---@param project_dir? string
+function scm.start_merge(project_dir)
+  project_dir = project_dir or util.get_current_project()
+  local backend = PROJECTS[project_dir]
+
+  if not backend then
+    core.error("SCM: current project directory is not versioned.")
+    return
+  end
+
+  backend:get_branches(project_dir, function(branches)
+    if not branches or #branches == 0 then
+      core.error("SCM: no branches found, or backend does not support merging.")
+      return
+    end
+
+    core.command_view:enter("Merge into branch (destination)", {
+      submit = function(text, item)
+        local destination = item and item.text or text
+        core.command_view:enter("Merge from branch (origin)", {
+          submit = function(text2, item2)
+            local origin = item2 and item2.text or text2
+            scm.perform_merge(project_dir, backend, destination, origin)
+          end,
+          suggest = function(text2)
+            return common.fuzzy_match(branches, text2)
+          end
+        })
+      end,
+      suggest = function(text)
+        return common.fuzzy_match(branches, text)
+      end
+    })
+  end)
+end
+
+--------------------------------------------------------------------------------
 -- Keep the project branch, changes and stats updated
 --------------------------------------------------------------------------------
 core.add_thread(function()
@@ -989,6 +1111,10 @@ command.add(
 
   ["scm:project-status"] = function(project_dir)
     scm.open_project_status(project_dir)
+  end,
+
+  ["scm:merge-branches"] = function(project_dir)
+    scm.start_merge(project_dir)
   end
 })
 

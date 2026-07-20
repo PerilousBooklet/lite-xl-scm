@@ -49,6 +49,9 @@ local Object = require "core.object"
 ---@alias plugins.scm.backend.ongetstats fun(stats?:plugins.scm.backend.stats, cached?:boolean)
 ---@alias plugins.scm.backend.ongetstatus fun(status?:string, cached?:boolean)
 ---@alias plugins.scm.backend.onexecstatus fun(success:boolean, errmsg?:string)
+---@alias plugins.scm.backend.ongetbranches fun(branches?:table<integer,string>, current?:string)
+---@alias plugins.scm.backend.ongetfileatref fun(content?:string, errmsg?:string)
+---@alias plugins.scm.backend.ongetdifffiles fun(files?:table<integer,string>)
 
 ---Base functionality to implement a SCM backend with async support.
 ---@class plugins.scm.backend : core.object
@@ -363,6 +366,50 @@ function Backend:remove_path(path, directory, callback) callback(false, "not imp
 ---@param callback plugins.scm.backend.onexecstatus
 ---@diagnostic disable-next-line
 function Backend:move_path(from, to, directory, callback) callback(false, "not implemented") end
+
+--------------------------------------------------------------------------------
+-- Merge support
+--------------------------------------------------------------------------------
+
+---Retrieve the list of local branches known to the backend.
+---@param directory string Project directory
+---@param callback plugins.scm.backend.ongetbranches
+---@diagnostic disable-next-line
+function Backend:get_branches(directory, callback) callback(nil) end
+
+---Checkout the given branch.
+---@param branch string
+---@param directory string Project directory
+---@param callback plugins.scm.backend.onexecstatus
+---@diagnostic disable-next-line
+function Backend:checkout_branch(branch, directory, callback) callback(false, "not implemented") end
+
+---Merge the given branch into the currently checked out branch, without
+---creating a merge commit (so conflicts, if any, are left in the working
+---tree for review).
+---@param branch string
+---@param directory string Project directory
+---@param callback plugins.scm.backend.onexecstatus
+---@diagnostic disable-next-line
+function Backend:merge_branch(branch, directory, callback) callback(false, "not implemented") end
+
+---Retrieve the content of a file as it exists on a given reference
+---(branch, tag or commit), regardless of the current working tree state.
+---@param file string Absolute path to file
+---@param ref string Branch, tag or commit reference
+---@param directory string Project directory
+---@param callback plugins.scm.backend.ongetfileatref
+---@diagnostic disable-next-line
+function Backend:get_file_at_ref(file, ref, directory, callback) callback(nil, "not implemented") end
+
+---Retrieve the list of files (as absolute paths) that differ between
+---two references.
+---@param ref1 string
+---@param ref2 string
+---@param directory string Project directory
+---@param callback plugins.scm.backend.ongetdifffiles
+---@diagnostic disable-next-line
+function Backend:get_diff_files(ref1, ref2, directory, callback) callback(nil) end
 
 
 return Backend

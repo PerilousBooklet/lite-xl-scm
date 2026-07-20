@@ -142,6 +142,10 @@ function Git:get_changes(directory, callback)
               new_path = line:match("%s*%S+%s+%S+%s*%S+%s*(%S+)")
             elseif status == "??" then
               status = "untracked"
+            elseif status == "UU" or status == "AA" or status == "DD" then
+              -- unresolved merge conflict; surface it as "edited" so it
+              -- shows up like any other pending change
+              status = "edited"
             end
             table.insert(changes, {
               status = status,
@@ -443,6 +447,109 @@ function Git:move_path(from, to, directory, callback)
     common.relative_path(directory, from),
     common.relative_path(directory, to)
   )
+end
+
+--------------------------------------------------------------------------------
+-- Merge support
+--------------------------------------------------------------------------------
+
+---@param directory string
+---@param callback plugins.scm.backend.ongetbranches
+function Git:get_branches(directory, callback)
+  self:execute(function(proc)
+    local branches = {}
+    local current = nil
+    for idx, line in self:get_process_lines(proc, "stdout") do
+      if line ~= "" then
+        local is_current = line:match("^%*") ~= nil
+        local name = line:gsub("^%*", ""):match("^%s*(.-)%s*$")
+        -- skip "(HEAD detached at ...)" style entries
+        if name and name ~= "" and not name:match("^%(") then
+          table.insert(branches, name)
+          if is_current then current = name end
+        end
+      end
+      if idx % 50 == 0 then
+        self:yield()
+      end
+    end
+    callback(branches, current)
+  end, directory, "--no-optional-locks", "branch", "--list")
+end
+
+---@param branch string
+---@param directory string
+---@param callback plugins.scm.backend.onexecstatus
+function Git:checkout_branch(branch, directory, callback)
+  self:execute(function(proc)
+    local success = false
+    local stdout = self:get_process_output(proc, "stdout")
+    local stderr = self:get_process_output(proc, "stderr")
+    if proc:returncode() == 0 then
+      success = true
+    end
+    callback(success, (stderr ~= "" and stderr) or stdout)
+  end, directory, "checkout", branch)
+end
+
+---@param branch string
+---@param directory string
+---@param callback plugins.scm.backend.onexecstatus
+function Git:merge_branch(branch, directory, callback)
+  self:execute(function(proc)
+    local success = false
+    local stdout = self:get_process_output(proc, "stdout")
+    local stderr = self:get_process_output(proc, "stderr")
+    if proc:returncode() == 0 then
+      success = true
+    elseif
+      stdout:match("Automatic merge failed")
+      or
+      stderr:match("Automatic merge failed")
+    then
+      -- git exits non-zero when there are conflicts, but this still
+      -- leaves a valid in-progress merge in the working tree, which is
+      -- exactly what we want to review, so treat it as a success here.
+      success = true
+    end
+    callback(success, (stderr ~= "" and stderr) or stdout)
+  end, directory, "merge", "--no-commit", "--no-ff", branch)
+end
+
+---@param file string Absolute path to file
+---@param ref string
+---@param directory string
+---@param callback plugins.scm.backend.ongetfileatref
+function Git:get_file_at_ref(file, ref, directory, callback)
+  local rel = common.relative_path(directory, file):gsub("\\", "/")
+  self:execute(function(proc)
+    local content = self:get_process_output(proc, "stdout")
+    local stderr = self:get_process_output(proc, "stderr")
+    if proc:returncode() == 0 then
+      callback(content)
+    else
+      callback(nil, stderr ~= "" and stderr or "could not read file at ref")
+    end
+  end, directory, "show", ref .. ":" .. rel)
+end
+
+---@param ref1 string
+---@param ref2 string
+---@param directory string
+---@param callback plugins.scm.backend.ongetdifffiles
+function Git:get_diff_files(ref1, ref2, directory, callback)
+  self:execute(function(proc)
+    local files = {}
+    for idx, line in self:get_process_lines(proc, "stdout") do
+      if line ~= "" then
+        table.insert(files, directory .. PATHSEP .. line:gsub("/", PATHSEP))
+      end
+      if idx % 50 == 0 then
+        self:yield()
+      end
+    end
+    callback(files)
+  end, directory, "diff", "--name-only", ref1 .. ".." .. ref2)
 end
 
 
