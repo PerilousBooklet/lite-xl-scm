@@ -15,6 +15,14 @@
         "git",
         "fossil"
       ]
+    },
+    {
+      "id": "intellij_like_gitblame",
+      "mod_version": "3",
+      "version": "0.1",
+      "name": "intellij_like_gitblame",
+      "description": "Intellij-like git blame.",
+      "file": "intellij_like_gitblame.lua"
     }
   ]
 }

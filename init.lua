@@ -26,6 +26,38 @@ local Fossil = require "plugins.scm.backend.fossil"
 local MessageBox = require "libraries.widget.messagebox"
 local MergeView = require "plugins.scm.mergeview"
 
+-- WIP: adding tab that contains output of `git log --graph --oneline`
+-- * WIP: draw colored text in history tab
+-- * TODO: visualize a complex history graph (when colors are enabled), make a screenshot an put it in the PR's comment
+-- WIP: adding more commands: `fetch`, `pull`
+-- * TODO: to pull from remote: add remote check and commandview to pass remote name
+-- WIP: command: git fetch --all
+-- WIP: command: git pull
+-- WIP: intellij-like gitblame
+
+-- FIX: scm: add a space between each diff-stdout-dump text-block in the diff view, for clarity
+-- FIX: project status is not colored (look at the diff)
+-- FIX: show history is not colored (look at the diff)
+
+-- TODO: add diffview (look at the mergeview)
+-- TODO: add intellij-like blame
+
+-- TODO: color the "branch-name +n / ~n / -n" in the statusview with green-yellow-red colors
+-- TODO: add `scm:scroll-changes`: run a command that gets the list of current file's changes and allows traversing all changes
+--       (just like the default search command)
+-- TODO: interactive hunk add
+-- TODO: detect if file belongs to submodule and show the submodule's data instead of the super-repo
+
+-- TODO: interactive `git add` (fundamental for many files, maybe with long paths)
+--  - TODO: add new tab with treeview ?
+--          (navigate treeview with arrows)
+--          (press tab to view file diff)
+--          (press enter to stage file/folder)
+-- NOTE: take inspiration from the following:
+-- NOTE: https://zed.dev/git
+-- NOTE: https://www.sublimetext.com/
+-- NOTE: https://www.sublimemerge.com/
+
 ---Backends shipped with the plugin.
 ---@type table<string,plugins.scm.backend>
 local BACKENDS

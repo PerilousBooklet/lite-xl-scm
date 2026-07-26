@@ -6,13 +6,15 @@ local config = require "core.config"
 local style = require "core.style"
 local DocView = require "core.docview"
 
+-- FIX: plugin is broken
+
 -- Store blame data per document path: blame_data[filename][line_num] = "YYYY-MM-DD Author"
 local blame_data = {}
 local pending_jobs = {}
 local plugin_enabled = true
 
 -- Configuration for appearance
-config.gitblame_inline = {
+config.intellij_like_gitblame = {
   date_format = "%Y-%m-%d", -- Format string for date
   max_author_length = 12,   -- Truncate author names longer than this
   padding = 15              -- Extra pixel spacing between blame and line number
@@ -68,8 +70,8 @@ local function fetch_git_blame(doc)
         author_time = tonumber(line:sub(13)) or 0
       elseif line:match("^\t") and current_line then
         -- Tab indicates the actual code line (end of metadata block for this line)
-        local date_str = os.date(config.gitblame_inline.date_format, author_time)
-        local clean_author = truncate_string(author, config.gitblame_inline.max_author_length)
+        local date_str = os.date(config.intellij_like_gitblame.date_format, author_time)
+        local clean_author = truncate_string(author, config.intellij_like_gitblame.max_author_length)
         results[current_line] = string.format("%s %s", date_str, clean_author)
         current_line = nil
       end
@@ -96,8 +98,8 @@ function DocView:get_gutter_width()
   end
 
   -- Calculate width required for the blame string based on current font
-  local sample_str = "2026-00-00 " .. string.rep("A", config.gitblame_inline.max_author_length)
-  local blame_width = self:get_font():get_width(sample_str) + config.gitblame_inline.padding
+  local sample_str = "2026-00-00 " .. string.rep("A", config.intellij_like_gitblame.max_author_length)
+  local blame_width = self:get_font():get_width(sample_str) + config.intellij_like_gitblame.padding
   
   return width + blame_width
 end
@@ -119,7 +121,7 @@ function DocView:draw_line_gutter(line, x, y, width)
     renderer.draw_text(font, blame_text, x, y, color)
     
     -- Shrink the remaining width passed to the standard line number drawer
-    local blame_text_width = font:get_width("2026-00-00 " .. string.rep("A", config.gitblame_inline.max_author_length)) + config.gitblame_inline.padding
+    local blame_text_width = font:get_width("2026-00-00 " .. string.rep("A", config.intellij_like_gitblame.max_author_length)) + config.intellij_like_gitblame.padding
     x = x + blame_text_width
     width = width - blame_text_width
   end
