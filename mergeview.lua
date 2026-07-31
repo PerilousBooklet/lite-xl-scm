@@ -39,14 +39,14 @@ local style = require "core.style"
 local DocView = require "core.docview"
 local linediff = require "plugins.scm.linediff"
 
--- FUTURE_TODO: use Guldoman's CanvasView to draw smooth gutter shapes
-
 -- FIX: in-place mouse scrolling for left/right views
 
 -- TODO: check if `minimap` plugin is installed, if it is, adjust coordinate system to avoid overlapping on minimap
 -- TODO: add super-scrollbar (coordinate auto-scroll of other scrollbars in relation to super-scrollbar)
 -- TODO: draw gutter shapes to indicate merge direction of code blocks
 -- TODO: draw gutter buttons to handle diff code
+
+-- FUTURE_TODO: use Guldoman's CanvasView to draw smooth gutter shapes
 
 ---@class plugins.scm.mergeview : core.docview
 ---@field super core.docview

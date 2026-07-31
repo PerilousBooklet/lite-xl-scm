@@ -58,6 +58,9 @@ local MergeView = require "plugins.scm.mergeview"
 -- NOTE: https://www.sublimetext.com/
 -- NOTE: https://www.sublimemerge.com/
 
+-- REVIEW: remove unnecessary comments
+-- REVIEW: full code review
+
 ---Backends shipped with the plugin.
 ---@type table<string,plugins.scm.backend>
 local BACKENDS
