@@ -823,7 +823,14 @@ function scm.open_merge_view(path, project_dir, backend, origin, destination)
       -- behaves exactly like any other doc in the editor.
       local center_doc = core.open_doc(path)
 
-      local view = MergeView(origin_doc, center_doc, destination_doc)
+      -- center pane is the destination branch's on-disk file with the
+      -- merge already applied (see perform_merge: checkout destination,
+      -- then merge origin into it without committing) -- "(working
+      -- copy)" makes that distinction from the read-only destination
+      -- snapshot on the right clear at a glance.
+      local center_label = string.format("%s (working copy)", destination)
+
+      local view = MergeView(origin_doc, center_doc, destination_doc, origin, destination, center_label)
       local node = core.root_view:get_active_node_default()
       node:add_view(view)
     end)

@@ -734,10 +734,15 @@ function DiffView:draw()
   self:draw_diff_gutter()
 
   -- labels drawn last of all, in the corner of each pane, on top of
-  -- everything including the diff-gutter shapes
+  -- everything including the diff-gutter shapes -- anchored to the
+  -- bottom edge rather than the top so they don't sit over the file's
+  -- first lines, which is exactly where a diff's own first change
+  -- often is
   local margin = style.padding.y * 0.5
-  draw_pane_label(left_x + margin, self.position.y + margin, self.left_label)
-  draw_pane_label(right_x + margin, self.position.y + margin, self.right_label)
+  local label_h = style.font:get_height() + style.padding.x -- padding.x*0.5 top + bottom
+  local label_y = self.position.y + self.size.y - margin - label_h
+  draw_pane_label(left_x + margin, label_y, self.left_label)
+  draw_pane_label(right_x + margin, label_y, self.right_label)
 end
 
 --------------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 local core = require "core"
+local common = require "core.common"
 local style = require "core.style"
 local DocView = require "core.docview"
 local linediff = require "plugins.scm.linediff"
 
 -- FIX: merge confirmation button is missing
 -- TODO: indicate merge direction of code blocks in gutter shapes
--- TODO: add top-left indicator of branch name (look at diffview)
 
 -- TODO: draw gutter buttons to handle editing diff code (add/remove)
 
@@ -64,7 +64,10 @@ end
 ---@param left_doc core.doc
 ---@param center_doc core.doc
 ---@param right_doc core.doc
-function MergeView:new(left_doc, center_doc, right_doc)
+---@param left_label? string Short label drawn over the left pane
+---@param right_label? string Short label drawn over the right pane
+---@param center_label? string Short label drawn over the center pane
+function MergeView:new(left_doc, center_doc, right_doc, left_label, right_label, center_label)
   -- this makes `self` behave as a normal DocView bound to center_doc:
   -- same cursor, undo stack, scrolling, syntax highlighting, etc.
   MergeView.super.new(self, center_doc)
@@ -75,6 +78,10 @@ function MergeView:new(left_doc, center_doc, right_doc)
   disable_minimap(self.right_view)
   self.left_view.scrollable = true
   self.right_view.scrollable = true
+
+  self.left_label = left_label or "left"
+  self.right_label = right_label or "right"
+  self.center_label = center_label or "working copy"
 
   -- width of the empty, background-colored strip between columns
   self.divider_width = math.ceil(4 * (SCALE or 1)) * 10
@@ -670,6 +677,25 @@ function MergeView:draw_diff_gutters()
 end
 
 --------------------------------------------------------------------------------
+-- Pane labels
+--------------------------------------------------------------------------------
+
+---Draws a small badge with `text` at (x, y). Used to show which
+---revision each pane is displaying (e.g. branch/ref name) without
+---reserving any layout space for it -- it's just drawn on top of the
+---pane's own content in a corner, the same way the blame tooltip in
+---init.lua overlays the doc rather than pushing it aside.
+local function draw_pane_label(x, y, text)
+  local font = style.font
+  local pad = style.padding.x * 0.5
+  local tw = font:get_width(text)
+  local th = font:get_height()
+
+  renderer.draw_rect(x, y, tw + pad * 2, th + pad * 2, style.background3)
+  common.draw_text(font, style.accent, text, "left", x + pad, y + pad, tw, th)
+end
+
+--------------------------------------------------------------------------------
 -- Full-line highlight rendering
 --------------------------------------------------------------------------------
 
@@ -766,6 +792,18 @@ function MergeView:draw()
   -- drawn last, on top of the flat divider strips, the line highlights,
   -- and after both panes, so the shapes are never occluded by anything
   self:draw_diff_gutters()
+
+  -- labels drawn last of all, in the corner of each pane, on top of
+  -- everything including the diff-gutter shapes -- anchored to the
+  -- bottom edge rather than the top so they don't sit over the file's
+  -- first lines, which is exactly where a diff's own first change
+  -- often is
+  local margin = style.padding.y * 0.5
+  local label_h = style.font:get_height() + style.padding.x -- padding.x*0.5 top + bottom
+  local label_y = self.position.y + self.size.y - margin - label_h
+  draw_pane_label(left_x + margin, label_y, self.left_label)
+  draw_pane_label(center_x + margin, label_y, self.center_label)
+  draw_pane_label(right_x + margin, label_y, self.right_label)
 end
 
 function MergeView:on_mouse_moved(x, y, dx, dy)
