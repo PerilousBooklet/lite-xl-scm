@@ -1,50 +1,15 @@
--- A DocView variant that shows three documents side by side in a single
--- view: left | center | right, separated by thin background-colored
--- columns.
---
--- This class *is* the DocView for the center document -- it inherits
--- DocView directly and is constructed against the center doc, exactly
--- like a normal DocView would be. That means every built-in editing
--- command (typing, arrow keys, selection, undo, etc, all of which act on
--- `core.active_view.doc`) works on the center document with no extra
--- code on our part.
---
--- The left and right documents are shown using two ordinary, separate
--- DocView instances that this view positions and draws inside its own
--- bounds. For now they're just plain DocViews (fully editable, nothing
--- special) -- deciding what actually goes in them, whether they should
--- be read-only, etc, is left for later.
---
--- NOTE: to make the inherited DocView drawing/mouse-to-cursor logic
--- operate only within the center column, this view temporarily narrows
--- self.position.x/self.size.x to the center column's bounds whenever it
--- delegates to the DocView superclass, then restores the real (full)
--- bounds afterwards. That relies on DocView using self.position/self.size
--- for both clipping and screen<->document coordinate translation, which
--- matches the behavior used elsewhere in this plugin already.
---
--- Diff gutters: the two divider strips between left/center and
--- center/right are also used to draw "who changed what" indicators --
--- one shape per changed block, colored the same way the single-doc
--- gutter highlighter already colors additions/deletions/modifications
--- (see plugins.scm's DocView:draw_line_gutter override). The block data
--- itself comes from a plain Myers line-diff (plugins.scm.linediff)
--- computed directly between the two documents' current buffers, not
--- from git: it doesn't matter whether left/right are real files, virtual
--- ReadDocs holding another branch's version of the file, or anything
--- else DocView can wrap.
-
 local core = require "core"
 local style = require "core.style"
 local DocView = require "core.docview"
 local linediff = require "plugins.scm.linediff"
 
--- FIX: in-place mouse scrolling for left/right views
+-- FIX: merge confirmation button is missing
+-- TODO: indicate merge direction of code blocks in gutter shapes
+-- TODO: add top-left indicator of branch name (look at diffview)
 
--- TODO: check if `minimap` plugin is installed, if it is, adjust coordinate system to avoid overlapping on minimap
--- TODO: add super-scrollbar (coordinate auto-scroll of other scrollbars in relation to super-scrollbar)
--- TODO: draw gutter shapes to indicate merge direction of code blocks
--- TODO: draw gutter buttons to handle diff code
+-- TODO: draw gutter buttons to handle editing diff code (add/remove)
+
+-- FIX: gutter shape transitions while scrolling are flickering
 
 -- FUTURE_TODO: use Guldoman's CanvasView to draw smooth gutter shapes
 
@@ -65,6 +30,37 @@ local DIFF_POLL_INTERVAL = 0.5
 ---core.add_thread body below).
 local DIFF_YIELD_EVERY = 64
 
+---Alpha (0-255) used for the full-line diff highlight wash drawn across
+---each changed line's entire width -- separate from (and much lower
+---than) the alpha used for the small gutter-shape fills, since this one
+---sits directly on top of the code text and needs to stay legible.
+local LINE_HIGHLIGHT_ALPHA = 40
+
+---Height (in pixels, scaled by SCALE at draw time) of the marker line
+---drawn at a pure insertion/deletion's boundary -- see
+---draw_line_highlight_blocks for why that boundary needs its own marker
+---rather than a row wash.
+local LINE_MARKER_HEIGHT = 2
+
+---Alpha (0-255) for that marker line. Deliberately much higher than
+---LINE_HIGHLIGHT_ALPHA: it's a thin line rather than a wash across the
+---whole row, so it can afford (and needs) to be much more opaque in
+---order to read as a deliberate mark rather than a stray pixel.
+local LINE_MARKER_ALPHA = 200
+
+---How many lines of context (in center-document coordinates) to keep
+---above a navigation stop's line when jumping to it, so the change
+---doesn't land flush against the very top edge of the viewport.
+local GOTO_BLOCK_MARGIN_LINES = 3
+
+---@param view core.docview
+local function disable_minimap(view)
+  local sb = view.v_scrollbar
+  if sb and sb.is_minimap_enabled then
+    sb.enabled = false
+  end
+end
+
 ---@param left_doc core.doc
 ---@param center_doc core.doc
 ---@param right_doc core.doc
@@ -75,6 +71,8 @@ function MergeView:new(left_doc, center_doc, right_doc)
 
   self.left_view = DocView(left_doc)
   self.right_view = DocView(right_doc)
+  disable_minimap(self.left_view)
+  disable_minimap(self.right_view)
   self.left_view.scrollable = true
   self.right_view.scrollable = true
 
@@ -103,6 +101,20 @@ function MergeView:new(left_doc, center_doc, right_doc)
     center = self.scroll.to.y,
     right = self.right_view.scroll.to.y,
   }
+
+  -- Tracks, per pane, the exact value sync_scrolling last *forced* onto
+  -- that pane (copied down from whichever pane is driving the group
+  -- scroll this frame). This lets us tell "this pane's own scroll clamp
+  -- caught up with a value we pushed into it" apart from "this pane
+  -- genuinely received new input", without needing to know what that
+  -- pane's real maximum scroll actually is -- see sync_scrolling for
+  -- the full rationale.
+  self.forced_scroll_to_y = {}
+
+  -- See DiffView.last_goto_line/last_goto_target_y for the full
+  -- rationale -- same mechanism, here in center-document coordinates.
+  self.last_goto_line = nil
+  self.last_goto_target_y = nil
 
   self:start_diff_thread()
 end
@@ -196,6 +208,51 @@ local function point_in(px, py, x, y, w, h)
   return px >= x and px < x + w and py >= y and py < y + h
 end
 
+---Maps a (possibly fractional) line coordinate from one side of a diff
+---block list to the other, so that scroll-syncing can align panes by
+---*diff correspondence* rather than by raw line number. See the
+---identical helper in diffview.lua for the full writeup of the
+---coordinate convention and the interpolation/collapse rules -- this is
+---the same function, just duplicated here the way the other small
+---diff-math helpers (color_for_type, with_alpha, get_line_edge_y, etc)
+---already are between the two files.
+---@param blocks table
+---@param from_is_a boolean
+---@param line number
+---@return number
+local function map_line(blocks, from_is_a, line)
+  local prev_from_end, prev_to_end = 0, 0
+
+  for i = 1, #blocks do
+    local block = blocks[i]
+    local from1 = from_is_a and block.a1 or block.b1
+    local from2 = from_is_a and block.a2 or block.b2
+    local to1   = from_is_a and block.b1 or block.a1
+    local to2   = from_is_a and block.b2 or block.a2
+
+    local from_lo, from_hi = from1, from2 + 1
+    if from1 > from2 then from_hi = from_lo end
+
+    if line < from_lo then
+      return line + (prev_to_end - prev_from_end)
+    end
+
+    if line < from_hi then
+      if to1 > to2 then
+        return to1
+      end
+      local to_lo, to_hi = to1, to2 + 1
+      local t = (line - from_lo) / (from_hi - from_lo)
+      return to_lo + t * (to_hi - to_lo)
+    end
+
+    prev_from_end = from_hi
+    prev_to_end = (to1 > to2) and to1 or (to2 + 1)
+  end
+
+  return line + (prev_to_end - prev_from_end)
+end
+
 ---Positions the left/right child views inside their own columns. Called
 ---from both update() and draw() so their bounds are always correct
 ---before anything (including their own internal scrollbar) is computed
@@ -210,6 +267,75 @@ function MergeView:layout_side_panes()
   self.right_view.size.x, self.right_view.size.y = pane_w, self.size.y
 end
 
+---Converts a view's current scroll.to.y into an equivalent (possibly
+---fractional) "line at the top of the viewport" coordinate, in the
+---same continuous convention map_line uses.
+---@param view core.docview
+---@return number
+function MergeView:scroll_to_line(view)
+  return view.scroll.to.y / view:get_line_height() + 1
+end
+
+---Inverse of scroll_to_line: converts a line coordinate back into the
+---scroll.to.y that would put it at the top of `view`'s viewport.
+---@param view core.docview
+---@param line number
+---@return number
+function MergeView:line_to_scroll(view, line)
+  return (line - 1) * view:get_line_height()
+end
+
+---Given which pane is driving the scroll (`source_key`) and its
+---current top-of-viewport line, computes the corresponding line for
+---each of the *other* two panes by chaining through whichever block
+---list connects them:
+---
+--- - source "left":   left --left_blocks--> center --right_blocks--> right
+--- - source "right":  right --right_blocks--> center --left_blocks--> left
+--- - source "center": center --left_blocks--> left
+---                     center --right_blocks--> right
+---
+---i.e. the center pane is always the hinge: a change starting from a
+---side pane is first mapped onto the center document, then that
+---(already-mapped) center line is mapped again onto the far side pane,
+---rather than trying to map directly between left and right (which
+---share no block list of their own).
+---@param source_key "left"|"center"|"right"
+---@param source_line number
+---@return table lines keyed by "left"/"center"/"right"
+function MergeView:map_all_lines(source_key, source_line)
+  local lines = { [source_key] = source_line }
+
+  if source_key == "left" then
+    lines.center = map_line(self.left_blocks, true, source_line)
+    lines.right = map_line(self.right_blocks, true, lines.center)
+  elseif source_key == "right" then
+    lines.center = map_line(self.right_blocks, false, source_line)
+    lines.left = map_line(self.left_blocks, false, lines.center)
+  else -- "center"
+    lines.left = map_line(self.left_blocks, false, source_line)
+    lines.right = map_line(self.right_blocks, true, source_line)
+  end
+
+  return lines
+end
+
+---Synchronizes vertical scroll across all three panes so that whichever
+---diff block is at the top of one pane's viewport, the *corresponding*
+---lines of that same block are kept at the top of the other panes'
+---viewports too -- rather than just keeping all three panes at the same
+---raw pixel offset, which only stays meaningful up until the first
+---block that has a different number of lines across sides. See
+---map_line/map_all_lines for the actual correspondence logic.
+---
+---Whenever exactly one pane's scroll.to.y changed this frame due to
+---real input, its line position is mapped onto the other two panes and
+---written into them. A pane holding a shorter document clamps its own
+---scroll.to.y to its own ceiling once forced past it, which looks
+---identical to real input unless we specifically remember (in
+---self.forced_scroll_to_y) the exact value we ourselves wrote into it
+---last frame and exclude exactly that transition from counting as a
+---new source.
 function MergeView:sync_scrolling()
   local panes = {
     { key = "left",   view = self.left_view },
@@ -222,17 +348,8 @@ function MergeView:sync_scrolling()
     local prev = self.prev_scroll_to_y[pane.key]
     local cur = pane.view.scroll.to.y
     if cur ~= prev then
-      local own_max = self:get_pane_max_scroll_y(pane.view)
-      -- A pane whose own document is shorter clamps its scroll.to.y to
-      -- its own max every time it updates. If we forced it past that
-      -- max last frame (because a taller pane had scrolled further),
-      -- its own next update() call pulls it straight back down to
-      -- own_max -- that's just the pane's own clamp catching up with
-      -- last frame's sync, not new input, and must not be treated as a
-      -- fresh source: doing so would drag the whole merge view's
-      -- scroll back down to the shortest document's ceiling every
-      -- time, which is exactly the bug this is fixing.
-      if not (cur == own_max and prev > own_max) then
+      local forced_prev = self.forced_scroll_to_y[pane.key]
+      if not (forced_prev ~= nil and forced_prev == prev) then
         source = pane
         break
       end
@@ -240,11 +357,17 @@ function MergeView:sync_scrolling()
   end
 
   if source then
-    local target_y = source.view.scroll.to.y
+    local source_line = self:scroll_to_line(source.view)
+    local mapped = self:map_all_lines(source.key, source_line)
+
     for _, pane in ipairs(panes) do
       if pane.key ~= source.key then
+        local target_y = self:line_to_scroll(pane.view, mapped[pane.key])
         pane.view.scroll.y = target_y
         pane.view.scroll.to.y = target_y
+        self.forced_scroll_to_y[pane.key] = target_y
+      else
+        self.forced_scroll_to_y[pane.key] = nil
       end
     end
   end
@@ -289,16 +412,106 @@ function MergeView:get_tallest_view()
   return self
 end
 
----Returns how many pixels `view` can scroll down before reaching the
----end of its own document, given its current on-screen height. Uses the
----same doc-height/line-height arithmetic a DocView clamps its own
----scroll.to.y against, so this always agrees with that pane's own
----natural ceiling.
----@param view core.docview
----@return number
-function MergeView:get_pane_max_scroll_y(view)
-  local content_h = #view.doc.lines * view:get_line_height()
-  return math.max(0, content_h - view.size.y)
+--------------------------------------------------------------------------------
+-- Diff-block navigation
+--------------------------------------------------------------------------------
+
+---Builds a single, position-sorted list of navigation "stops" by
+---merging left_blocks and right_blocks into center-document line
+---coordinates: a left_blocks entry's stop is block.b1 (its position on
+---the center side of that block list); a right_blocks entry's stop is
+---block.a1 (the center side of *that* list). Center is always the
+---hinge (see map_all_lines), so this is the one coordinate system both
+---block lists share.
+---
+---Not merged/deduplicated when a left- and a right-side block happen to
+---start on the same center line -- both remain separate stops at the
+---same position, since that's two independent changes coinciding, not
+---one change to collapse into a single stop.
+---@return table[] stops, each {line = number, block = table, side = "left"|"right"}
+function MergeView:get_navigation_stops()
+  local stops = {}
+  for _, block in ipairs(self.left_blocks) do
+    table.insert(stops, { line = block.b1, block = block, side = "left" })
+  end
+  for _, block in ipairs(self.right_blocks) do
+    table.insert(stops, { line = block.a1, block = block, side = "right" })
+  end
+  table.sort(stops, function(x, y) return x.line < y.line end)
+  return stops
+end
+
+---Scrolls so that `stop.line` (already in center-document coordinates)
+---sits a few lines below the top of the viewport (see
+---GOTO_BLOCK_MARGIN_LINES).
+---@param stop table
+function MergeView:scroll_to_stop(stop)
+  local line = math.max(1, stop.line - GOTO_BLOCK_MARGIN_LINES)
+  local target_y = self:line_to_scroll(self, line)
+  self.scroll.y = target_y
+  self.scroll.to.y = target_y
+
+  -- Remember the stop's own (unclamped, un-margined) line -- goto_block
+  -- needs this, not the landing line above it, to correctly recognize
+  -- "we're already on this stop" the next time it's called. See
+  -- DiffView:goto_block for the full writeup of why.
+  self.last_goto_line = stop.line
+  self.last_goto_target_y = target_y
+end
+
+---Moves to the next (direction > 0) or previous (direction < 0) diff
+---block relative to the center pane's current position.
+---@param direction number
+function MergeView:goto_block(direction)
+  local stops = self:get_navigation_stops()
+  if #stops == 0 then
+    core.warn("SCM: no changes to navigate.")
+    return
+  end
+
+  local current
+  if self.last_goto_target_y ~= nil and self.scroll.to.y == self.last_goto_target_y then
+    current = self.last_goto_line
+  else
+    current = self:scroll_to_line(self)
+  end
+
+  local target
+
+  if direction > 0 then
+    for _, stop in ipairs(stops) do
+      if stop.line > current + 0.5 then
+        target = stop
+        break
+      end
+    end
+    if not target then
+      core.warn("SCM: no more changes below.")
+      return
+    end
+  else
+    for i = #stops, 1, -1 do
+      local stop = stops[i]
+      if stop.line < current - 0.5 then
+        target = stop
+        break
+      end
+    end
+    if not target then
+      core.warn("SCM: no more changes above.")
+      return
+    end
+  end
+
+  self:scroll_to_stop(target)
+end
+
+function MergeView:goto_next_block()
+  self:goto_block(1)
+end
+
+function MergeView:goto_previous_block()
+  self:goto_block(-1)
 end
 
 --------------------------------------------------------------------------------
@@ -327,18 +540,24 @@ function MergeView:get_line_edge_y(view, line)
   local n = #view.doc.lines
   local lh = view:get_line_height()
 
-  -- Computed directly rather than via view:get_line_screen_position,
-  -- which only needs to be accurate for currently-visible lines and may
-  -- clamp or otherwise misbehave far outside the current scroll
-  -- position -- exactly the case here, since a block's line can be
-  -- anywhere in the file regardless of where the view is scrolled to.
-  -- This is the same position - scroll + offset arithmetic DocView
-  -- positioning is built from, but it stays correct arbitrarily far
-  -- off-screen, which the visibility cull in draw_diff_shape depends on.
-  local base_y = view.position.y - view.scroll.y
+  -- Anchored on view:get_content_offset() rather than a hand-rolled
+  -- `view.position.y - view.scroll.y`: get_content_offset() is the same
+  -- function DocView's own line-drawing anchors on, so it already folds
+  -- in whatever top padding/rounding that drawing applies that we'd
+  -- otherwise have to guess at -- a mismatch there was exactly why the
+  -- diff shapes and line highlights used to come out very slightly
+  -- offset against the actual text rows. We still don't call
+  -- view:get_line_screen_position() itself, though: unlike
+  -- get_content_offset() (a pure position - scroll transform, safe for
+  -- any line, on-screen or not), get_line_screen_position() isn't
+  -- guaranteed accurate for a line far outside the current scroll
+  -- position -- and a block's line can be anywhere in the file
+  -- regardless of where the view is currently scrolled to.
+  local _, base_y = view:get_content_offset()
+  base_y = base_y + style.padding.y
 
   if n == 0 then
-    return view.position.y
+    return base_y
   end
   if line > n then
     return base_y + n * lh
@@ -450,6 +669,77 @@ function MergeView:draw_diff_gutters()
   core.pop_clip_rect()
 end
 
+--------------------------------------------------------------------------------
+-- Full-line highlight rendering
+--------------------------------------------------------------------------------
+
+---Draws a translucent tint spanning the full width of `view` over every
+---line in `blocks` that touches the given `side` ("a" or "b"). Mirrors
+---the same green/red/yellow convention the gutter shapes already use
+---(see color_for_type), but washes the color across the whole line
+---instead of a thin bar in the divider -- the gutter marks *that*
+---something changed, this makes *where* impossible to miss while
+---actually reading the code, the same way IntelliJ (and most modern
+---diff UIs) highlight changed lines directly in the editor.
+---
+---A block can also have *no* lines on this side at all: a1 > a2 (or
+---b1 > b2) means "no lines here", which is the case for a pure
+---addition's `a` side or a pure deletion's `b` side (see
+---plugins.scm.linediff's block convention). There's no row to shade
+---then, but something still happened at that exact point -- so instead
+---a short, solid marker line is drawn straddling the boundary between
+---the two surrounding (unchanged) lines. Without it, that side had no
+---rendered indication of the change at all beyond the tip of the gutter
+---shape over in the divider, which is easy to miss.
+---@param blocks table
+---@param side "a"|"b"
+---@param view core.docview
+---@param x number
+---@param w number
+function MergeView:draw_line_highlight_blocks(blocks, side, view, x, w)
+  for _, block in ipairs(blocks) do
+    local line1 = side == "a" and block.a1 or block.b1
+    local line2 = side == "a" and block.a2 or block.b2
+    local color = color_for_type(block.type)
+
+    if line2 >= line1 then
+      local y1 = self:get_line_edge_y(view, line1)
+      local y2 = self:get_line_edge_y(view, line2 + 1)
+
+      if y2 >= self.position.y and y1 <= self.position.y + self.size.y then
+        renderer.draw_rect(x, y1, w, y2 - y1, with_alpha(color, LINE_HIGHLIGHT_ALPHA))
+      end
+    else
+      local mh = LINE_MARKER_HEIGHT * (SCALE or 1)
+      local y = self:get_line_edge_y(view, line1) - mh / 2
+
+      if y + mh >= self.position.y and y <= self.position.y + self.size.y then
+        renderer.draw_rect(x, y, w, mh, with_alpha(color, LINE_MARKER_ALPHA))
+      end
+    end
+  end
+end
+
+---Draws the full-line highlight wash for all three panes: left_blocks
+---covers left_view (its `a` side) and the center pane (its `b` side);
+---right_blocks covers the center pane again (its `a` side) and
+---right_view (its `b` side). The center pane can end up with two
+---independent washes from two different neighbors, which is correct --
+---a line can simultaneously differ from the left branch and from the
+---right branch in different ways, and both are worth showing.
+function MergeView:draw_line_highlights()
+  local left_x, center_x, right_x, pane_w = self:get_pane_metrics()
+
+  core.push_clip_rect(self.position.x, self.position.y, self.size.x, self.size.y)
+
+  self:draw_line_highlight_blocks(self.left_blocks, "a", self.left_view, left_x, pane_w)
+  self:draw_line_highlight_blocks(self.left_blocks, "b", self, center_x, pane_w)
+  self:draw_line_highlight_blocks(self.right_blocks, "a", self, center_x, pane_w)
+  self:draw_line_highlight_blocks(self.right_blocks, "b", self.right_view, right_x, pane_w)
+
+  core.pop_clip_rect()
+end
+
 function MergeView:draw()
   self:draw_background(style.background)
   self:layout_side_panes()
@@ -468,8 +758,13 @@ function MergeView:draw()
 
   self:with_center_bounds(MergeView.super.draw, self)
 
-  -- drawn last, on top of the flat divider strips and after both panes,
-  -- so the shapes are never occluded by anything
+  -- full-line tint over every changed line, drawn on top of the panes'
+  -- own content (background + text) so it reads as a translucent wash
+  -- over whatever the theme already renders there
+  self:draw_line_highlights()
+
+  -- drawn last, on top of the flat divider strips, the line highlights,
+  -- and after both panes, so the shapes are never occluded by anything
   self:draw_diff_gutters()
 end
 

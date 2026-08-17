@@ -71,12 +71,26 @@ function util.split(s, delimeter, delimeter_pattern)
   if not delimeter_pattern then
     delimeter_pattern = delimeter
   end
-
   local result = {};
   for match in (s..delimeter):gmatch("(.-)"..delimeter_pattern) do
     table.insert(result, match);
   end
   return result;
+end
+
+---Truncate a string to at most `max_len` characters, appending an
+---ellipsis in place of the last character when it's cut short. Operates
+---on bytes (like the rest of this module's string helpers), so
+---multi-byte UTF-8 author names may truncate mid-codepoint -- acceptable
+---for a gutter annotation, not worth the extra complexity here.
+---@param str string
+---@param max_len integer
+---@return string
+function util.truncate(str, max_len)
+  if #str > max_len then
+    return string.sub(str, 1, max_len - 1) .. "…"
+  end
+  return str
 end
 
 ---Check if a file exists.
@@ -96,13 +110,11 @@ end
 ---@return boolean
 function util.command_exists(command)
   local command_win = nil
-
   if PLATFORM == "Windows" then
     if not command:find("%.exe$") then
       command_win = command .. ".exe"
     end
   end
-
   if
     util.file_exists(command)
     or
@@ -110,18 +122,14 @@ function util.command_exists(command)
   then
     return true
   end
-
   local env_path = os.getenv("PATH")
-
   if env_path then
     local path_list = {}
-
     if PLATFORM ~= "Windows" then
       path_list = util.split(env_path, ":")
     else
       path_list = util.split(env_path, ";")
     end
-
     -- Automatic support for brew, macports, etc...
     if PLATFORM == "Mac OS X" then
       if
@@ -132,7 +140,6 @@ function util.command_exists(command)
         table.insert(path_list, 1, "/usr/local/bin")
       end
     end
-
     for _, path in pairs(path_list) do
       local path_fix = path:gsub("[/\\]$", "") .. PATHSEP
       if util.file_exists(path_fix .. command) then
@@ -142,9 +149,7 @@ function util.command_exists(command)
       end
     end
   end
-
   return false
 end
-
 
 return util

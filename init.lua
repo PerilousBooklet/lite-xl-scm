@@ -25,22 +25,16 @@ local Git = require "plugins.scm.backend.git"
 local Fossil = require "plugins.scm.backend.fossil"
 local MessageBox = require "libraries.widget.messagebox"
 local MergeView = require "plugins.scm.mergeview"
+local DiffView = require "plugins.scm.diffview"
 
--- WIP: adding tab that contains output of `git log --graph --oneline`
--- * WIP: draw colored text in history tab
--- * TODO: visualize a complex history graph (when colors are enabled), make a screenshot an put it in the PR's comment
--- WIP: adding more commands: `fetch`, `pull`
--- * TODO: to pull from remote: add remote check and commandview to pass remote name
--- WIP: command: git fetch --all
--- WIP: command: git pull
 -- WIP: intellij-like gitblame
 
 -- FIX: scm: add a space between each diff-stdout-dump text-block in the diff view, for clarity
 -- FIX: project status is not colored (look at the diff)
 -- FIX: show history is not colored (look at the diff)
 
--- TODO: add diffview (look at the mergeview)
--- TODO: add intellij-like blame
+-- TODO: add contextmenu item for diffview
+-- TODO: replace all readdoc views with custom View that simply draws text
 
 -- TODO: color the "branch-name +n / ~n / -n" in the statusview with green-yellow-red colors
 -- TODO: add `scm:scroll-changes`: run a command that gets the list of current file's changes and allows traversing all changes
@@ -70,11 +64,15 @@ local BACKENDS
 ---@field highlighter_alignment "right" | "left"
 ---@field git_path string
 ---@field fossil_path string
+---@field inline_blame_max_author_length integer
+---@field inline_blame_padding integer
 config.plugins.smc = common.merge({
   highlighter = true,
   highlighter_alignment = "right",
   git_path = "git",
   fossil_path = "fossil",
+  inline_blame_max_author_length = 12,
+  inline_blame_padding = 15,
   config_spec = {
     name = "Source Control Management",
     {
@@ -94,6 +92,22 @@ config.plugins.smc = common.merge({
         {"Left", "left"},
         {"Right", "right"}
       }
+    },
+    {
+      label = "Inline Blame Max Author Length",
+      description = "Truncate author names in the inline blame annotation longer than this many characters.",
+      path = "inline_blame_max_author_length",
+      type = "number",
+      default = 12,
+      min = 1
+    },
+    {
+      label = "Inline Blame Padding",
+      description = "Extra pixel spacing between the inline blame annotation and the line number.",
+      path = "inline_blame_padding",
+      type = "number",
+      default = 15,
+      min = 0
     },
     {
       label = "Git Path",
@@ -139,6 +153,16 @@ local scm = {}
 ---Show the blame information of active line.
 ---@type boolean
 scm.show_blame = false
+
+---Show an IntelliJ-style inline blame annotation ("date author") in the
+---gutter before the line number, for every line at once -- as opposed
+---to scm.show_blame, which only shows blame for the line under the
+---cursor, on hover, as a tooltip. Both draw from the same underlying
+---backend:get_file_blame data (see update_doc_blame), so turning either
+---one on is enough to trigger the fetch; data isn't cleared until both
+---are off.
+---@type boolean
+scm.show_inline_blame = false
 
 ---List of loaded projects current branch.
 ---@type table<string, string>
@@ -206,10 +230,33 @@ local function update_doc_diff(doc)
   doc.scm_diff = nil
 end
 
+---Computes the pixel width of the widest "date author" annotation
+---across every line in `list`, using the same truncation the inline
+---blame gutter drawing applies -- so the gutter can reserve exactly
+---enough space up front instead of guessing at a fixed sample string.
+---A fixed guess would have to assume a specific date format, which
+---isn't under this plugin's control: it's whatever the backend's
+---get_file_blame happens to produce, and that can differ between Git
+---and Fossil (or between Git configurations).
+---@param list table
+---@return number
+local function compute_inline_blame_width(list)
+  local font = style.code_font
+  local max_author_length = config.plugins.smc.inline_blame_max_author_length
+  local width = 0
+  for _, info in ipairs(list) do
+    local author = util.truncate(info.author or "", max_author_length)
+    local text = string.format("%s %s", info.date or "", author)
+    width = math.max(width, font:get_width(text))
+  end
+  return width
+end
+
 ---@param doc core.doc
 local function update_doc_blame(doc)
-  if not scm.show_blame then
+  if not (scm.show_blame or scm.show_inline_blame) then
     if doc.blame_list then doc.blame_list = nil end
+    if doc.blame_inline_width then doc.blame_inline_width = nil end
     return
   end
   if doc.abs_filename then
@@ -219,14 +266,17 @@ local function update_doc_blame(doc)
       backend:get_file_blame(doc.abs_filename, project_dir, function(list)
         if list and #list > 0 then
           doc.blame_list = list
+          doc.blame_inline_width = compute_inline_blame_width(list)
         else
           doc.blame_list = nil
+          doc.blame_inline_width = nil
         end
       end)
       return
     end
   end
   if doc.blame_list then doc.blame_list = nil end
+  if doc.blame_inline_width then doc.blame_inline_width = nil end
 end
 
 ---@param path string
@@ -857,6 +907,49 @@ function scm.start_merge(project_dir)
 end
 
 --------------------------------------------------------------------------------
+-- Diff support
+--------------------------------------------------------------------------------
+
+---Prompts for a branch to compare against (fuzzy-matched, same UX as
+---the first prompt of scm.start_merge), then opens a DiffView comparing
+---`path`'s current on-disk contents against its contents on the chosen
+---branch. Unlike scm.open_path_diff (which dumps the raw `.diff` text
+---for whatever is currently staged/unstaged), this always compares
+---against a branch of the user's choosing and renders the comparison
+---side by side rather than as a patch.
+---@param path string
+function scm.open_file_diff_view(path)
+  local project_dir = util.get_project_dir(path)
+  local backend = PROJECTS[project_dir]
+
+  if not project_dir or not backend then
+    core.error("SCM: current project directory is not versioned.")
+    return
+  end
+
+  backend:get_branches(project_dir, function(branches)
+    if not branches or #branches == 0 then
+      core.error("SCM: no branches found, or backend does not support this.")
+      return
+    end
+
+    core.command_view:enter("Diff against branch", {
+      submit = function(text, item)
+        local base_ref = item and item.text or text
+        -- compare_ref intentionally omitted: DiffView.open then reads
+        -- the file straight off disk for the right-hand pane, so this
+        -- always reflects the file exactly as it is right now,
+        -- including any uncommitted local changes.
+        DiffView.open(path, project_dir, backend, base_ref)
+      end,
+      suggest = function(text)
+        return common.fuzzy_match(branches, text)
+      end
+    })
+  end)
+end
+
+--------------------------------------------------------------------------------
 -- Keep the project branch, changes and stats updated
 --------------------------------------------------------------------------------
 core.add_thread(function()
@@ -924,12 +1017,52 @@ function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
 end
 
 --------------------------------------------------------------------------------
--- Override DocView to draw changes on gutter and blame tooltip
+-- Override DocView to draw changes on gutter, inline blame and blame tooltip
 --------------------------------------------------------------------------------
 local DIFF_WIDTH = 3
 local docview_draw_line_gutter = DocView.draw_line_gutter
 local docview_get_gutter_width = DocView.get_gutter_width
+
+---Draws the inline "date author" annotation for `line`, if inline blame
+---is enabled and data is available, then returns how many pixels wide
+---it (plus its padding) was -- 0 if nothing was drawn. Always called
+---first, before any of the diff-highlighter logic below, so the
+---annotation sits leftmost regardless of the highlighter's own
+---left/right alignment setting: everything below just operates on
+---whatever x/width it's handed, same as it always has.
+---@param self core.docview
+---@param line integer
+---@param x number
+---@param y number
+---@return number
+local function draw_inline_blame(self, line, x, y)
+  if not scm.show_inline_blame or not self.doc or not self.doc.blame_inline_width then
+    return 0
+  end
+
+  local info = self.doc.blame_list and self.doc.blame_list[line]
+  if info then
+    local font = self:get_font()
+    local author = util.truncate(
+      info.author or "", config.plugins.smc.inline_blame_max_author_length
+    )
+    local text = string.format("%s %s", info.date or "", author)
+    local color = (style.syntax and style.syntax["comment"]) or style.dim
+    -- same yoffset the diff-highlighter accent bar below already uses
+    -- to align itself within the row -- without it the annotation sits
+    -- flush with the row's top edge instead of centered on the text.
+    local yoffset = self:get_line_text_y_offset()
+    renderer.draw_text(font, text, x, y + yoffset, color)
+  end
+
+  return self.doc.blame_inline_width + config.plugins.smc.inline_blame_padding
+end
+
 function DocView:draw_line_gutter(line, x, y, width)
+  local blame_w = draw_inline_blame(self, line, x, y)
+  x = x + blame_w
+  width = width - blame_w
+
   if not self.doc or not self.doc.scm_diff or not config.plugins.smc.highlighter then
     return docview_draw_line_gutter(self, line, x, y, width)
   end
@@ -984,11 +1117,32 @@ function DocView:draw_line_gutter(line, x, y, width)
 end
 
 function DocView:get_gutter_width()
-  if not self.doc or not self.doc.scm_diff or not config.plugins.smc.highlighter then
-    return docview_get_gutter_width(self)
+  -- docview_get_gutter_width (core's original, saved above) returns
+  -- TWO values: the total width, and the padding portion of it that
+  -- core's own draw() strips back out before sizing the line-number
+  -- text box (see `gpad and gw - gpad or gw` in core.docview's draw).
+  -- This override used to return only the first value, silently
+  -- dropping gpad -- which made every caller that destructures both
+  -- values (draw(), specifically) receive gpad = nil and fall back to
+  -- the FULL width instead of the padding-stripped one, widening the
+  -- line-number box by 2*style.padding.x and pushing numbers into the
+  -- code text's space. Only visible on files where scm_diff stays nil
+  -- forever (clean files): draw_line_gutter's other branch (taken once
+  -- scm_diff populates on a dirty file) bypasses this override entirely
+  -- and calls docview_get_gutter_width directly, which is why dirty
+  -- files were never affected once their diff data arrived.
+  local orig_width, orig_padding = docview_get_gutter_width(self)
+  local width = orig_width
+
+  if self.doc and self.doc.scm_diff and config.plugins.smc.highlighter then
+    width = width + style.padding.x * DIFF_WIDTH / 12
   end
-  return docview_get_gutter_width(self)
-    + style.padding.x * DIFF_WIDTH / 12
+
+  if scm.show_inline_blame and self.doc and self.doc.blame_inline_width then
+    width = width + self.doc.blame_inline_width + config.plugins.smc.inline_blame_padding
+  end
+
+  return width, orig_padding
 end
 
 local function draw_tooltip(text, x, y)
@@ -1166,12 +1320,27 @@ command.add(nil, {
   end
 })
 
+-- FIX: format ?
+command.add(nil, {
+  ["scm:toggle-inline-blame"] = function()
+    scm.show_inline_blame = not scm.show_inline_blame
+    for _, doc in ipairs(core.docs) do
+      update_doc_blame(doc)
+    end
+    core.log(
+      "SCM: %s inline blame",
+      scm.show_inline_blame and "showing" or "hiding"
+    )
+  end
+})
+
 command.add(
   function()
     local doc = util.get_current_doc()
     return scm.show_blame and doc.blame_list, doc
   end, {
 
+  -- FIX: ?
   ["scm:view-blame-diff"] = function(doc)
     ---@cast doc core.doc
     local line = doc:get_selection()
@@ -1290,6 +1459,37 @@ command.add(
 command.add(
   function()
     local doc = util.get_current_doc()
+    return doc
+      and scm.get_path_backend(doc.abs_filename) ~= nil
+      , doc
+  end, {
+
+  -- Deliberately not gated on the file having local changes or being
+  -- tracked: the whole point is comparing against an arbitrary branch,
+  -- which is meaningful for an unmodified/committed file too.
+  ["scm:file-diff-view"] = function(doc)
+    scm.open_file_diff_view(doc.abs_filename)
+  end
+})
+
+-- Single registration covering all three "goto change" contexts:
+-- MergeView, DiffView, and a live editable doc with local (uncommitted)
+-- changes. These must live under ONE command.add call, not three: Lite
+-- XL's command.add replaces any prior registration for a given command
+-- name rather than stacking multiple predicates under it, so splitting
+-- this into separate command.add calls per view type (as an earlier
+-- revision did) meant each later one silently clobbered the earlier
+-- ones -- only the last-registered predicate group ever ran.
+command.add(
+  function()
+    local view = core.active_view
+    if view and view:extends(MergeView) then
+      return true, "merge", view
+    end
+    if view and view:extends(DiffView) then
+      return true, "diff", view
+    end
+    local doc = util.get_current_doc()
     if doc then
       local project_dir = util.get_file_project_dir(doc.abs_filename)
       if
@@ -1297,29 +1497,40 @@ command.add(
         and
         doc.scm_diff
       then
-        return true, doc
+        return true, "doc", doc
       end
     end
     return false
   end, {
 
-	["scm:goto-previous-change"] = function(doc)
-		scm.previous_change(doc)
-	end,
+  ["scm:goto-previous-change"] = function(kind, target)
+    if kind == "merge" or kind == "diff" then
+      target:goto_previous_block()
+    else
+      scm.previous_change(target)
+    end
+  end,
 
-	["scm:goto-next-change"] = function(doc)
-		scm.next_change(doc)
-	end,
+  ["scm:goto-next-change"] = function(kind, target)
+    if kind == "merge" or kind == "diff" then
+      target:goto_next_block()
+    else
+      scm.next_change(target)
+    end
+  end,
 })
+
 
 --------------------------------------------------------------------------------
 -- Keymaps
 --------------------------------------------------------------------------------
 keymap.add {
-  ["ctrl+alt+["]  = "scm:goto-previous-change",
-  ["ctrl+alt+]"]  = "scm:goto-next-change",
-  ["ctrl+alt+b"]  = "scm:toggle-blame",
-  ["alt+b"]       = "scm:view-blame-diff",
+  ["ctrl+alt+["]       = "scm:goto-previous-change",
+  ["ctrl+alt+]"]       = "scm:goto-next-change",
+  ["alt+shift+b"]      = "scm:toggle-blame",
+  ["ctrl+alt+shift+b"] = "scm:toggle-inline-blame",
+  ["alt+b"]            = "scm:view-blame-diff",
+  ["ctrl+alt+d"]       = "scm:file-diff-view",
 }
 
 --------------------------------------------------------------------------------
