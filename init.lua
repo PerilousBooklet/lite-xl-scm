@@ -24,7 +24,7 @@ local ReadDoc = require "plugins.scm.readdoc"
 local Git = require "plugins.scm.backend.git"
 local Fossil = require "plugins.scm.backend.fossil"
 local MessageBox = require "libraries.widget.messagebox"
-local MergeView = require "plugins.scm.mergeview"
+local MergeSessionView = require "plugins.scm.mergesessionview"
 local DiffView = require "plugins.scm.diffview"
 
 -- WIP: intellij-like gitblame
@@ -789,16 +789,21 @@ end
 -- Merge support
 --------------------------------------------------------------------------------
 
----Opens a MergeView for a single file: left/right panes show the file as
----it exists on the origin/destination branches (virtual, read-only
----buffers), and the center pane is the real, on-disk file opened
----normally, so it's fully editable/saveable like any other doc.
+---Fetches a single file's origin/destination text and feeds it into an
+---already-open MergeSessionView as one more tab. The real, on-disk file
+---(possibly mid-merge, possibly with conflict markers) is opened
+---normally via core.open_doc so editing/saving it behaves exactly like
+---any other doc in the editor -- MergeSessionView just displays it as
+---the center pane of one of its internal tabs instead of as its own
+---separate top-level tab.
+---@param session_view plugins.scm.mergesessionview session to add this file's tab to
 ---@param path string Absolute path of the file to review
+---@param order integer this file's position among the merge's changed files
 ---@param project_dir string
 ---@param backend plugins.scm.backend
 ---@param origin string Origin branch name
 ---@param destination string Destination branch name
-function scm.open_merge_view(path, project_dir, backend, origin, destination)
+function scm.open_merge_view(session_view, path, order, project_dir, backend, origin, destination)
   backend:get_file_at_ref(path, origin, project_dir, function(origin_text)
     backend:get_file_at_ref(path, destination, project_dir, function(destination_text)
       local base = common.basename(path)
@@ -830,16 +835,19 @@ function scm.open_merge_view(path, project_dir, backend, origin, destination)
       -- snapshot on the right clear at a glance.
       local center_label = string.format("%s (working copy)", destination)
 
-      local view = MergeView(origin_doc, center_doc, destination_doc, origin, destination, center_label)
-      local node = core.root_view:get_active_node_default()
-      node:add_view(view)
+      session_view:add_file(
+        path, order,
+        origin_doc, center_doc, destination_doc,
+        origin, destination, center_label
+      )
     end)
   end)
 end
 
 ---Checks out the destination branch, merges the origin branch into it
 ---without committing (leaving conflicts, if any, in the working tree),
----then opens a MergeView tab for every file the merge touched.
+---then opens a single MergeSessionView tab and streams every changed
+---file into it as one of its internal per-file tabs.
 ---@param project_dir string
 ---@param backend plugins.scm.backend
 ---@param destination string
@@ -865,9 +873,13 @@ function scm.perform_merge(project_dir, backend, destination, origin)
           return
         end
 
+        local session_view = MergeSessionView(project_dir, origin, destination)
+        local node = core.root_view:get_active_node_default()
+        node:add_view(session_view)
+
         core.log("SCM: %d file(s) to review.", #file_changes)
-        for _, change in ipairs(file_changes) do
-          scm.open_merge_view(change.path, project_dir, backend, origin, destination)
+        for i, change in ipairs(file_changes) do
+          scm.open_merge_view(session_view, change.path, i, project_dir, backend, origin, destination)
         end
       end)
     end)
@@ -1480,18 +1492,22 @@ command.add(
 })
 
 -- Single registration covering all three "goto change" contexts:
--- MergeView, DiffView, and a live editable doc with local (uncommitted)
--- changes. These must live under ONE command.add call, not three: Lite
--- XL's command.add replaces any prior registration for a given command
--- name rather than stacking multiple predicates under it, so splitting
--- this into separate command.add calls per view type (as an earlier
--- revision did) meant each later one silently clobbered the earlier
--- ones -- only the last-registered predicate group ever ran.
+-- MergeSessionView (delegates to whichever file's MergeView is
+-- currently the active internal tab), DiffView, and a live editable doc
+-- with local (uncommitted) changes. These must live under ONE
+-- command.add call, not three: Lite XL's command.add replaces any prior
+-- registration for a given command name rather than stacking multiple
+-- predicates under it, so splitting this into separate command.add
+-- calls per view type (as an earlier revision did) meant each later one
+-- silently clobbered the earlier ones -- only the last-registered
+-- predicate group ever ran.
 command.add(
   function()
     local view = core.active_view
-    if view and view:extends(MergeView) then
-      return true, "merge", view
+    if view and view:extends(MergeSessionView) then
+      local mv = view:get_active_view()
+      if mv then return true, "merge", mv end
+      return false
     end
     if view and view:extends(DiffView) then
       return true, "diff", view
@@ -1527,17 +1543,54 @@ command.add(
   end,
 })
 
+-- File-level navigation within a MergeSessionView's own internal tab
+-- strip -- one layer above scm:goto-previous/next-change, which moves
+-- between diff *blocks* within a single file's MergeView. Gated on the
+-- active view actually being a MergeSessionView.
+command.add(
+  function()
+    local view = core.active_view
+    if view and view:extends(MergeSessionView) then
+      return true, view
+    end
+    return false
+  end, {
+
+  ["scm:merge-next-file"] = function(view)
+    view:next_file()
+  end,
+
+  ["scm:merge-previous-file"] = function(view)
+    view:previous_file()
+  end,
+
+  ["scm:merge-toggle-resolved"] = function(view)
+    view:toggle_active_resolved()
+  end,
+
+  ["scm:merge-close-session"] = function(view)
+    local node = core.root_view.root_node:get_node_for_view(view)
+    if node then
+      node:close_view(core.root_view.root_node, view)
+    end
+  end,
+})
+
 
 --------------------------------------------------------------------------------
 -- Keymaps
 --------------------------------------------------------------------------------
 keymap.add {
-  ["ctrl+alt+["]       = "scm:goto-previous-change",
-  ["ctrl+alt+]"]       = "scm:goto-next-change",
-  ["alt+shift+b"]      = "scm:toggle-blame",
-  ["ctrl+alt+shift+b"] = "scm:toggle-inline-blame",
-  ["alt+b"]            = "scm:view-blame-diff",
-  ["ctrl+alt+d"]       = "scm:file-diff-view",
+  ["ctrl+alt+["]        = "scm:goto-previous-change",
+  ["ctrl+alt+]"]        = "scm:goto-next-change",
+  ["alt+shift+b"]       = "scm:toggle-blame",
+  ["ctrl+alt+shift+b"]  = "scm:toggle-inline-blame",
+  ["alt+b"]             = "scm:view-blame-diff",
+  ["ctrl+alt+d"]        = "scm:file-diff-view",
+  ["ctrl+alt+pageup"]   = "scm:merge-previous-file",
+  ["ctrl+alt+pagedown"] = "scm:merge-next-file",
+  ["ctrl+alt+r"]        = "scm:merge-toggle-resolved",
+  ["ctrl+alt+shift+w"]  = "scm:merge-close-session",
 }
 
 --------------------------------------------------------------------------------
